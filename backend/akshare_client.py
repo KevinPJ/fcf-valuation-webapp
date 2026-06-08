@@ -162,6 +162,89 @@ def _eastmoney_klines(symbol: str) -> list[str]:
     return klines
 
 
+def _eastmoney_statement(symbol: str, report_name: str) -> list[dict[str, Any]]:
+    response = requests.get(
+        "https://datacenter-web.eastmoney.com/api/data/v1/get",
+        params={
+            "sortColumns": "REPORT_DATE",
+            "sortTypes": "-1",
+            "pageSize": "20",
+            "pageNumber": "1",
+            "reportName": report_name,
+            "columns": "ALL",
+            "filter": f'(SECURITY_CODE="{_normalize_symbol(symbol)}")',
+            "source": "WEB",
+            "client": "WEB",
+        },
+        timeout=15,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://data.eastmoney.com/",
+        },
+    )
+    response.raise_for_status()
+    payload = response.json()
+    rows = (((payload.get("result") or {}).get("data")) or [])
+    if not rows:
+        raise ValueError(f"Eastmoney {report_name} returned no rows.")
+    return rows
+
+
+def _period_from_report_date(row: dict[str, Any]) -> str:
+    value = str(row.get("REPORT_DATE") or row.get("REPORTDATE") or row.get("REPORT_DATE_NAME") or "")
+    return value[:4] if len(value) >= 4 else value
+
+
+def _eastmoney_financials(symbol: str) -> FinancialsResponse:
+    cash_flow = _eastmoney_statement(symbol, "RPT_DMSK_FN_CASHFLOW")
+    income = _eastmoney_statement(symbol, "RPT_DMSK_FN_INCOME")
+    balance = _eastmoney_statement(symbol, "RPT_DMSK_FN_BALANCE")
+
+    income_by_period = {_period_from_report_date(row): row for row in income}
+    balance_by_period = {_period_from_report_date(row): row for row in balance}
+    periods: list[FinancialPoint] = []
+    for row in cash_flow:
+        period = _period_from_report_date(row)
+        if not period:
+            continue
+        inc = income_by_period.get(period, {})
+        bal = balance_by_period.get(period, {})
+        ocf = _first_value(row, ["NETCASH_OPERATE", "NET_CASH_OPERATE", "NETCASH_OPERATE_A", "CASHFLOW_STATEMENT_NETCASH_OPERATE"])
+        capex = _first_value(row, ["CONSTRUCT_LONG_ASSET", "CONSTRUCT_LONG_ASSET_PAY", "PURCHASE_LONG_ASSET", "FIXED_ASSET_OTHER_PAY"])
+        if capex is not None and capex > 0:
+            capex = -capex
+        fcf = ocf + capex if ocf is not None and capex is not None else None
+        debt = _sum_values(bal, ["SHORT_LOAN", "NONCURRENT_LIAB_1YEAR", "LONG_LOAN", "BOND_PAYABLE"])
+        periods.append(
+            FinancialPoint(
+                period=period,
+                revenue=_first_value(inc, ["TOTAL_OPERATE_INCOME", "OPERATE_INCOME", "TOTAL_INCOME"]),
+                net_income=_first_value(inc, ["PARENT_NETPROFIT", "NETPROFIT", "NET_PROFIT"]),
+                operating_cash_flow=ocf,
+                capital_expenditure=capex,
+                free_cash_flow=fcf,
+                cash=_first_value(bal, ["MONETARYFUNDS", "CURRENCY_FUNDS", "CASH_DEPOSIT_PBC"]),
+                debt=debt,
+                shares=_first_value(bal, ["SHARE_CAPITAL", "TOTAL_SHARES", "SHARE_TOTAL", "TOTAL_SHARE_CAPITAL"]),
+            )
+        )
+
+    periods = sorted({point.period: point for point in periods}.values(), key=lambda item: item.period)[-8:]
+    warnings = ["财务报表来自东方财富公开接口。"]
+    if not any(point.free_cash_flow is not None for point in periods):
+        warnings.append("东方财富字段中未能计算 FCF，可填写基准 FCF 覆盖。")
+    if not any(point.shares is not None for point in periods):
+        warnings.append("未能取得股本字段，可填写股本覆盖。")
+
+    return FinancialsResponse(
+        symbol=_normalize_symbol(symbol),
+        source="Eastmoney",
+        updated_at=datetime.now().isoformat(timespec="seconds"),
+        periods=periods,
+        warnings=warnings,
+    )
+
+
 def _yahoo_symbol(symbol: str) -> str:
     normalized = _normalize_symbol(symbol)
     suffix = "SS" if normalized.startswith(("6", "9")) else "SZ"
@@ -337,9 +420,15 @@ def get_company_snapshot(symbol: str) -> CompanySnapshot:
 def get_financials(symbol: str) -> FinancialsResponse:
     normalized = _normalize_symbol(symbol)
     prefixed = _sina_symbol(normalized)
+    eastmoney_error: str | None = None
+    try:
+        return _eastmoney_financials(normalized)
+    except Exception as exc:
+        eastmoney_error = str(exc)
+
     ak = _require_akshare()
 
-    warnings: list[str] = []
+    warnings: list[str] = [f"东方财富财报兜底失败，改用 AkShare：{eastmoney_error}"]
     try:
         cash_flow = ak.stock_financial_report_sina(stock=prefixed, symbol="现金流量表")
         balance = ak.stock_financial_report_sina(stock=prefixed, symbol="资产负债表")

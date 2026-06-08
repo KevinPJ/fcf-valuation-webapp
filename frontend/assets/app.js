@@ -318,6 +318,9 @@ function App() {
       setFinancials(financialsResult);
       setValuation(valuationResult);
     } catch (err) {
+      setCompany(null);
+      setFinancials(null);
+      setValuation(null);
       setError(err.message || "未知错误");
     } finally {
       setLoading(false);
