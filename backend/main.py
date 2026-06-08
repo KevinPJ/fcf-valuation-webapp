@@ -70,6 +70,25 @@ def _latest_optional_value(values: list[float | None]) -> float | None:
     return None
 
 
+def _resolve_base_fcf(data: FinancialsResponse, warnings: list[str]) -> float:
+    fcf = _latest_optional_value([point.free_cash_flow for point in data.periods])
+    if fcf is not None:
+        return fcf
+    ocf = _latest_optional_value([point.operating_cash_flow for point in data.periods])
+    if ocf is not None:
+        warnings.append("未取得资本开支字段，基准 FCF 暂用经营现金流代理；可用基准 FCF 覆盖项修正。")
+        return ocf
+    net_income = _latest_optional_value([point.net_income for point in data.periods])
+    if net_income is not None:
+        warnings.append("未取得自由现金流和经营现金流，基准 FCF 暂用净利润代理；可用基准 FCF 覆盖项修正。")
+        return net_income
+    revenue = _latest_optional_value([point.revenue for point in data.periods])
+    if revenue is not None:
+        warnings.append("未取得现金流和净利润，基准 FCF 暂按收入的 10% 估算；必须用基准 FCF 覆盖项复核。")
+        return revenue * 0.1
+    raise HTTPException(status_code=422, detail="缺少 自由现金流、经营现金流、净利润和收入，请提供基准 FCF 覆盖参数。")
+
+
 @app.post("/api/valuation", response_model=ValuationResponse)
 def valuation(request: ValuationRequest) -> ValuationResponse:
     symbol = request.symbol.strip()
@@ -79,7 +98,7 @@ def valuation(request: ValuationRequest) -> ValuationResponse:
 
     base_fcf = request.baseFcfOverride
     if base_fcf is None:
-        base_fcf = _latest_value([point.free_cash_flow for point in data.periods], "自由现金流", warnings)
+        base_fcf = _resolve_base_fcf(data, warnings)
     if base_fcf <= 0:
         warnings.append("基准 FCF 为负或为零，DCF 结果对假设高度敏感。")
 
@@ -99,6 +118,9 @@ def valuation(request: ValuationRequest) -> ValuationResponse:
     shares = request.sharesOverride
     if shares is None:
         shares = _latest_optional_value([point.shares for point in data.periods])
+        if shares is None and snapshot.shares_outstanding:
+            shares = snapshot.shares_outstanding
+            warnings.append("未在财报中取得股本，已使用行情接口返回的总股本/流通股。")
         if shares is None and snapshot.market_cap and snapshot.latest_price and snapshot.latest_price > 0:
             shares = snapshot.market_cap / snapshot.latest_price
             warnings.append("未取得股本字段，已用市值 / 最新价格推导股本。")

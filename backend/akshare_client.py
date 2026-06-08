@@ -134,7 +134,7 @@ def _eastmoney_get(url: str, params: dict[str, str], timeout: int = 10) -> dict[
 
 
 def _eastmoney_quote(symbol: str) -> dict[str, Any]:
-    fields = "f43,f57,f58,f86,f116,f117"
+    fields = "f43,f57,f58,f84,f85,f86,f116,f117"
     return _eastmoney_get(
         "https://push2.eastmoney.com/api/qt/stock/get",
         {"secid": _eastmoney_secid(symbol), "fields": fields},
@@ -202,6 +202,18 @@ def _eastmoney_financials(symbol: str) -> FinancialsResponse:
 
     income_by_period = {_period_from_report_date(row): row for row in income}
     balance_by_period = {_period_from_report_date(row): row for row in balance}
+    quote: dict[str, Any] = {}
+    try:
+        quote = _eastmoney_quote(symbol)
+    except Exception:
+        quote = {}
+    quote_shares = _first_value(quote, ["f84", "f85"])
+    if quote_shares is None:
+        quote_price = _safe_float(quote.get("f43"))
+        quote_market_cap = _safe_float(quote.get("f116"))
+        if quote_price is not None and quote_price > 0 and quote_market_cap is not None:
+            quote_shares = quote_market_cap / (quote_price / 100)
+
     periods: list[FinancialPoint] = []
     for row in cash_flow:
         period = _period_from_report_date(row)
@@ -215,6 +227,7 @@ def _eastmoney_financials(symbol: str) -> FinancialsResponse:
             capex = -capex
         fcf = ocf + capex if ocf is not None and capex is not None else None
         debt = _sum_values(bal, ["SHORT_LOAN", "NONCURRENT_LIAB_1YEAR", "LONG_LOAN", "BOND_PAYABLE"])
+        shares = _first_value(bal, ["SHARE_CAPITAL", "TOTAL_SHARES", "SHARE_TOTAL", "TOTAL_SHARE_CAPITAL"]) or quote_shares
         periods.append(
             FinancialPoint(
                 period=period,
@@ -225,7 +238,7 @@ def _eastmoney_financials(symbol: str) -> FinancialsResponse:
                 free_cash_flow=fcf,
                 cash=_first_value(bal, ["MONETARYFUNDS", "CURRENCY_FUNDS", "CASH_DEPOSIT_PBC"]),
                 debt=debt,
-                shares=_first_value(bal, ["SHARE_CAPITAL", "TOTAL_SHARES", "SHARE_TOTAL", "TOTAL_SHARE_CAPITAL"]),
+                shares=shares,
             )
         )
 
@@ -288,6 +301,7 @@ def _yahoo_company_snapshot(symbol: str) -> CompanySnapshot:
         latest_price=latest_price,
         latest_trade_date=latest_trade_date,
         market_cap=_safe_float(meta.get("marketCap")),
+        shares_outstanding=None,
         source="Yahoo Finance",
         warnings=[],
     )
@@ -366,7 +380,6 @@ def check_data_source() -> dict[str, Any]:
 @lru_cache(maxsize=128)
 def get_company_snapshot(symbol: str) -> CompanySnapshot:
     normalized = _normalize_symbol(symbol)
-    ak = _require_akshare()
 
     warnings: list[str] = []
     try:
@@ -382,6 +395,8 @@ def get_company_snapshot(symbol: str) -> CompanySnapshot:
             latest_price=price,
             latest_trade_date=latest_trade_date,
             market_cap=_safe_float(quote.get("f116")),
+            shares_outstanding=_first_value(quote, ["f84", "f85"]),
+            source="Eastmoney",
             warnings=warnings,
         )
     except Exception as exc:
@@ -394,6 +409,7 @@ def get_company_snapshot(symbol: str) -> CompanySnapshot:
     except Exception as exc:
         warnings.append(f"Yahoo Finance 行情兜底失败，改用 AkShare：{exc}")
 
+    ak = _require_akshare()
     try:
         info = _individual_info_map(ak, normalized)
         hist = _recent_hist(ak, normalized)
@@ -408,6 +424,7 @@ def get_company_snapshot(symbol: str) -> CompanySnapshot:
             latest_price=price,
             latest_trade_date=str(row.get("日期", datetime.now().strftime("%Y-%m-%d"))),
             market_cap=market_cap,
+            shares_outstanding=_share_count_from_info(info),
             warnings=warnings,
         )
     except HTTPException:

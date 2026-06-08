@@ -21,6 +21,7 @@ class CompanySnapshot(BaseModel):
     latest_price: float | None = None
     latest_trade_date: str | None = None
     market_cap: float | None = None
+    shares_outstanding: float | None = None
     source: str = "AkShare"
     warnings: list[str] = Field(default_factory=list)
 
