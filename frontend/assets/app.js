@@ -106,7 +106,7 @@ function InputPanel({ inputs, setInputs, loading, onSubmit }) {
         </div>
         <div className="field">
           <label>基准 FCF 覆盖</label>
-          <input type="number" step="0.01" value={inputs.baseFcfOverride} onChange={update("baseFcfOverride")} placeholder="留空使用 AkShare，单位：亿元" />
+          <input type="number" step="0.01" value={inputs.baseFcfOverride} onChange={update("baseFcfOverride")} placeholder="留空使用真实数据源，单位：亿元" />
         </div>
         <div className="grid-2">
           <div className="field">

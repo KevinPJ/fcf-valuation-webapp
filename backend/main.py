@@ -63,6 +63,13 @@ def _latest_value(values: list[float | None], field_name: str, warnings: list[st
     raise HTTPException(status_code=422, detail=f"缺少 {field_name}，请提供手动覆盖参数。")
 
 
+def _latest_optional_value(values: list[float | None]) -> float | None:
+    for value in reversed(values):
+        if value is not None:
+            return value
+    return None
+
+
 @app.post("/api/valuation", response_model=ValuationResponse)
 def valuation(request: ValuationRequest) -> ValuationResponse:
     symbol = request.symbol.strip()
@@ -77,15 +84,26 @@ def valuation(request: ValuationRequest) -> ValuationResponse:
         warnings.append("基准 FCF 为负或为零，DCF 结果对假设高度敏感。")
 
     if request.netDebtOverride is None:
-        cash = _latest_value([point.cash for point in data.periods], "现金", warnings)
-        debt = _latest_value([point.debt for point in data.periods], "有息债务", warnings)
+        cash = _latest_optional_value([point.cash for point in data.periods])
+        debt = _latest_optional_value([point.debt for point in data.periods])
+        if cash is None:
+            cash = 0
+            warnings.append("未取得现金字段，净债务桥暂按现金为 0 处理；可用净债务覆盖项手动修正。")
+        if debt is None:
+            debt = 0
+            warnings.append("未取得有息债务字段，净债务桥暂按有息债务为 0 处理；可用净债务覆盖项手动修正。")
         net_debt = debt - cash
     else:
         net_debt = request.netDebtOverride
 
     shares = request.sharesOverride
     if shares is None:
-        shares = _latest_value([point.shares for point in data.periods], "股本", warnings)
+        shares = _latest_optional_value([point.shares for point in data.periods])
+        if shares is None and snapshot.market_cap and snapshot.latest_price and snapshot.latest_price > 0:
+            shares = snapshot.market_cap / snapshot.latest_price
+            warnings.append("未取得股本字段，已用市值 / 最新价格推导股本。")
+        if shares is None:
+            raise HTTPException(status_code=422, detail="缺少 股本，请提供手动覆盖参数。")
 
     try:
         result = calculate_fcff_dcf(
