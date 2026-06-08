@@ -88,6 +88,36 @@ def test_data_health_prefers_eastmoney_direct(monkeypatch):
     assert payload["row_count"] == 2
 
 
+def test_data_health_uses_yahoo_when_eastmoney_fails(monkeypatch):
+    monkeypatch.setattr(
+        akshare_client,
+        "_eastmoney_quote",
+        lambda symbol: (_ for _ in ()).throw(RuntimeError("eastmoney down")),
+    )
+    monkeypatch.setattr(
+        akshare_client,
+        "_yahoo_chart",
+        lambda symbol: {
+            "meta": {"shortName": "Ping An Bank", "symbol": "000001.SZ"},
+            "timestamp": [1780848000, 1780934400],
+            "indicators": {"quote": [{"close": [10.0, 10.2]}]},
+        },
+    )
+
+    client = TestClient(main.app)
+    response = client.get("/api/data-health")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["data_source"] == "Yahoo Finance"
+    assert payload["symbol"] == "000001.SZ"
+    assert payload["row_count"] == 2
+    assert payload["provider_checks"][0]["provider"] == "Eastmoney"
+    assert payload["provider_checks"][0]["status"] == "failed"
+    assert payload["provider_checks"][1]["provider"] == "Yahoo Finance"
+    assert payload["provider_checks"][1]["status"] == "ok"
+
+
 def test_data_health_falls_back_to_akshare(monkeypatch):
     class FakeAkshare:
         def stock_zh_a_hist(self, symbol, period, start_date, end_date, adjust):
@@ -111,6 +141,11 @@ def test_data_health_falls_back_to_akshare(monkeypatch):
         "_eastmoney_quote",
         lambda symbol: (_ for _ in ()).throw(RuntimeError("eastmoney down")),
     )
+    monkeypatch.setattr(
+        akshare_client,
+        "_yahoo_chart",
+        lambda symbol: (_ for _ in ()).throw(RuntimeError("yahoo down")),
+    )
     monkeypatch.setattr(akshare_client, "_require_akshare", lambda: FakeAkshare())
 
     client = TestClient(main.app)
@@ -122,3 +157,33 @@ def test_data_health_falls_back_to_akshare(monkeypatch):
     assert payload["data_source"] == "AkShare"
     assert payload["endpoint"] == "stock_zh_a_hist + stock_individual_info_em"
     assert payload["row_count"] == 2
+
+
+def test_data_health_reports_all_provider_errors(monkeypatch):
+    class FakeAkshare:
+        def stock_zh_a_hist(self, symbol, period, start_date, end_date, adjust):
+            raise RuntimeError("akshare down")
+
+    monkeypatch.setattr(
+        akshare_client,
+        "_eastmoney_quote",
+        lambda symbol: (_ for _ in ()).throw(RuntimeError("eastmoney down")),
+    )
+    monkeypatch.setattr(
+        akshare_client,
+        "_yahoo_chart",
+        lambda symbol: (_ for _ in ()).throw(RuntimeError("yahoo down")),
+    )
+    monkeypatch.setattr(akshare_client, "_require_akshare", lambda: FakeAkshare())
+
+    client = TestClient(main.app)
+    response = client.get("/api/data-health")
+    payload = response.json()
+
+    assert response.status_code == 502
+    assert payload["detail"]["message"] == "所有真实财经数据源连通性检查都失败。"
+    assert [item["provider"] for item in payload["detail"]["provider_checks"]] == [
+        "Eastmoney",
+        "Yahoo Finance",
+        "AkShare",
+    ]

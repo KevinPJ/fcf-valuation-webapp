@@ -162,9 +162,57 @@ def _eastmoney_klines(symbol: str) -> list[str]:
     return klines
 
 
+def _yahoo_symbol(symbol: str) -> str:
+    normalized = _normalize_symbol(symbol)
+    suffix = "SS" if normalized.startswith(("6", "9")) else "SZ"
+    return f"{normalized}.{suffix}"
+
+
+def _yahoo_chart(symbol: str) -> dict[str, Any]:
+    yahoo_symbol = _yahoo_symbol(symbol)
+    response = requests.get(
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}",
+        params={"range": "1mo", "interval": "1d"},
+        timeout=10,
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    response.raise_for_status()
+    payload = response.json()
+    result = (payload.get("chart") or {}).get("result") or []
+    if not result:
+        raise ValueError(f"Yahoo chart returned empty result for {yahoo_symbol}.")
+    return result[0]
+
+
+def _yahoo_company_snapshot(symbol: str) -> CompanySnapshot:
+    chart = _yahoo_chart(symbol)
+    meta = chart.get("meta") or {}
+    timestamps = chart.get("timestamp") or []
+    indicators = ((chart.get("indicators") or {}).get("quote") or [{}])[0]
+    close_values = indicators.get("close") or []
+    latest_price = _safe_float(meta.get("regularMarketPrice"))
+    if latest_price is None:
+        for value in reversed(close_values):
+            latest_price = _safe_float(value)
+            if latest_price is not None:
+                break
+    latest_trade_date = datetime.now().strftime("%Y-%m-%d")
+    if timestamps:
+        latest_trade_date = datetime.fromtimestamp(timestamps[-1]).strftime("%Y-%m-%d")
+    return CompanySnapshot(
+        symbol=_normalize_symbol(symbol),
+        name=str(meta.get("shortName") or meta.get("symbol") or _normalize_symbol(symbol)),
+        latest_price=latest_price,
+        latest_trade_date=latest_trade_date,
+        market_cap=_safe_float(meta.get("marketCap")),
+        source="Yahoo Finance",
+        warnings=[],
+    )
+
+
 def check_data_source() -> dict[str, Any]:
     symbol = "000001"
-    errors: list[str] = []
+    provider_checks: list[dict[str, Any]] = []
     try:
         quote = _eastmoney_quote(symbol)
         klines = _eastmoney_klines(symbol)
@@ -177,18 +225,48 @@ def check_data_source() -> dict[str, Any]:
             "row_count": len(klines),
             "sample_columns": ["date", "open", "close", "high", "low", "volume", "amount"],
             "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "provider_checks": [{"provider": "Eastmoney", "status": "ok"}],
         }
     except Exception as exc:
-        errors.append(f"Eastmoney direct failed: {exc}")
+        provider_checks.append({"provider": "Eastmoney", "status": "failed", "error": str(exc)})
+
+    try:
+        chart = _yahoo_chart(symbol)
+        timestamps = chart.get("timestamp") or []
+        return {
+            "status": "ok",
+            "data_source": "Yahoo Finance",
+            "endpoint": "query1 chart",
+            "symbol": _yahoo_symbol(symbol),
+            "name": str((chart.get("meta") or {}).get("shortName") or _yahoo_symbol(symbol)),
+            "row_count": len(timestamps),
+            "sample_columns": ["timestamp", "open", "high", "low", "close", "volume"],
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "provider_checks": [*provider_checks, {"provider": "Yahoo Finance", "status": "ok"}],
+        }
+    except Exception as exc:
+        provider_checks.append({"provider": "Yahoo Finance", "status": "failed", "error": str(exc)})
 
     ak = _require_akshare()
     try:
         hist = _recent_hist(ak, symbol)
         info = _individual_info_map(ak, symbol)
     except Exception as exc:
-        raise _data_error(f"AkShare 数据源连通性检查失败：{exc}") from exc
+        provider_checks.append({"provider": "AkShare", "status": "failed", "error": str(exc)})
+        raise _data_error(
+            {
+                "message": "所有真实财经数据源连通性检查都失败。",
+                "provider_checks": provider_checks,
+            }
+        ) from exc
     if hist is None or hist.empty:
-        raise _data_error("AkShare 数据源连通性检查失败：单股票日线接口返回空表。")
+        provider_checks.append({"provider": "AkShare", "status": "failed", "error": "单股票日线接口返回空表。"})
+        raise _data_error(
+            {
+                "message": "所有真实财经数据源连通性检查都失败。",
+                "provider_checks": provider_checks,
+            }
+        )
     return {
         "status": "ok",
         "data_source": "AkShare",
@@ -198,7 +276,7 @@ def check_data_source() -> dict[str, Any]:
         "row_count": int(len(hist)),
         "sample_columns": [str(column) for column in list(hist.columns)[:8]],
         "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "fallback_errors": errors,
+        "provider_checks": [*provider_checks, {"provider": "AkShare", "status": "ok"}],
     }
 
 
@@ -225,6 +303,13 @@ def get_company_snapshot(symbol: str) -> CompanySnapshot:
         )
     except Exception as exc:
         warnings.append(f"东方财富行情兜底失败，改用 AkShare：{exc}")
+
+    try:
+        snapshot = _yahoo_company_snapshot(normalized)
+        snapshot.warnings = [*warnings, "东方财富行情不可用，当前价格来自 Yahoo Finance。"]
+        return snapshot
+    except Exception as exc:
+        warnings.append(f"Yahoo Finance 行情兜底失败，改用 AkShare：{exc}")
 
     try:
         info = _individual_info_map(ak, normalized)
