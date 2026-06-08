@@ -65,7 +65,30 @@ def test_api_returns_company_financials_and_valuation(monkeypatch):
     assert len(payload["sensitivity"]) == 15
 
 
-def test_data_health_uses_akshare_spot_endpoint(monkeypatch):
+def test_data_health_prefers_eastmoney_direct(monkeypatch):
+    monkeypatch.setattr(
+        akshare_client,
+        "_eastmoney_quote",
+        lambda symbol: {"f58": "平安银行"},
+    )
+    monkeypatch.setattr(
+        akshare_client,
+        "_eastmoney_klines",
+        lambda symbol: ["2026-06-05,10,10.1,10.2,9.9,1,1", "2026-06-08,10.1,10.2,10.3,10.0,1,1"],
+    )
+
+    client = TestClient(main.app)
+    response = client.get("/api/data-health")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["data_source"] == "Eastmoney"
+    assert payload["endpoint"] == "push2 stock/get + push2his kline/get"
+    assert payload["row_count"] == 2
+
+
+def test_data_health_falls_back_to_akshare(monkeypatch):
     class FakeAkshare:
         def stock_zh_a_hist(self, symbol, period, start_date, end_date, adjust):
             return pd.DataFrame(
@@ -83,6 +106,11 @@ def test_data_health_uses_akshare_spot_endpoint(monkeypatch):
                 ]
             )
 
+    monkeypatch.setattr(
+        akshare_client,
+        "_eastmoney_quote",
+        lambda symbol: (_ for _ in ()).throw(RuntimeError("eastmoney down")),
+    )
     monkeypatch.setattr(akshare_client, "_require_akshare", lambda: FakeAkshare())
 
     client = TestClient(main.app)

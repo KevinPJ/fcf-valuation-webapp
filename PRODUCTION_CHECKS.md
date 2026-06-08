@@ -4,12 +4,12 @@
 
 1. 打开首页，确认能看到估值参数面板和图表区域。
 2. 访问 `/api/health`，确认 FastAPI 服务在线。
-3. 访问 `/api/data-health`，确认 AkShare 单股票日线接口返回非零 `row_count`。
+3. 访问 `/api/data-health`，确认东方财富或 AkShare 真实数据接口返回非零 `row_count`。
 4. 访问 `/api/company/000001`，确认返回真实公司名称和最新价。
 5. 访问 `/api/financials/000001`，确认返回三大报表映射后的历史数据。
 6. 在首页输入 `000001` 并点击重新计算，确认页面显示估值、历史指标图、FCF 预测表和敏感性表。
 
-如果 `/api/health` 正常但 `/api/data-health` 失败，说明网站进程已启动，但云平台到 AkShare 数据源的网络访问失败。
+如果 `/api/health` 正常但 `/api/data-health` 失败，说明网站进程已启动，但云平台到东方财富和 AkShare 数据源的网络访问都失败。
 
 如果 `/api/data-health` 正常但某个股票估值失败，优先检查：
 

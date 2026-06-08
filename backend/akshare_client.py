@@ -5,6 +5,7 @@ from functools import lru_cache
 from typing import Any
 
 import pandas as pd
+import requests
 from fastapi import HTTPException
 
 from .models import CompanySnapshot, FinancialPoint, FinancialsResponse
@@ -61,6 +62,12 @@ def _sina_symbol(symbol: str) -> str:
     return f"sz{normalized}"
 
 
+def _eastmoney_secid(symbol: str) -> str:
+    normalized = _normalize_symbol(symbol)
+    market = "1" if normalized.startswith(("6", "9")) else "0"
+    return f"{market}.{normalized}"
+
+
 def _data_error(message: str, status_code: int = 502) -> HTTPException:
     return HTTPException(status_code=status_code, detail=message)
 
@@ -109,9 +116,72 @@ def _recent_hist(ak: Any, symbol: str) -> pd.DataFrame:
     )
 
 
+def _eastmoney_get(url: str, params: dict[str, str], timeout: int = 10) -> dict[str, Any]:
+    response = requests.get(
+        url,
+        params=params,
+        timeout=timeout,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://quote.eastmoney.com/",
+        },
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("data") is None:
+        raise ValueError(f"Eastmoney returned empty data: {payload}")
+    return payload["data"]
+
+
+def _eastmoney_quote(symbol: str) -> dict[str, Any]:
+    fields = "f43,f57,f58,f86,f116,f117"
+    return _eastmoney_get(
+        "https://push2.eastmoney.com/api/qt/stock/get",
+        {"secid": _eastmoney_secid(symbol), "fields": fields},
+    )
+
+
+def _eastmoney_klines(symbol: str) -> list[str]:
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=45)).strftime("%Y%m%d")
+    data = _eastmoney_get(
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+        {
+            "secid": _eastmoney_secid(symbol),
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+            "klt": "101",
+            "fqt": "0",
+            "beg": start_date,
+            "end": end_date,
+        },
+    )
+    klines = data.get("klines") or []
+    if not klines:
+        raise ValueError("Eastmoney kline endpoint returned no rows.")
+    return klines
+
+
 def check_data_source() -> dict[str, Any]:
-    ak = _require_akshare()
     symbol = "000001"
+    errors: list[str] = []
+    try:
+        quote = _eastmoney_quote(symbol)
+        klines = _eastmoney_klines(symbol)
+        return {
+            "status": "ok",
+            "data_source": "Eastmoney",
+            "endpoint": "push2 stock/get + push2his kline/get",
+            "symbol": symbol,
+            "name": str(quote.get("f58") or symbol),
+            "row_count": len(klines),
+            "sample_columns": ["date", "open", "close", "high", "low", "volume", "amount"],
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        }
+    except Exception as exc:
+        errors.append(f"Eastmoney direct failed: {exc}")
+
+    ak = _require_akshare()
     try:
         hist = _recent_hist(ak, symbol)
         info = _individual_info_map(ak, symbol)
@@ -128,6 +198,7 @@ def check_data_source() -> dict[str, Any]:
         "row_count": int(len(hist)),
         "sample_columns": [str(column) for column in list(hist.columns)[:8]],
         "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "fallback_errors": errors,
     }
 
 
@@ -137,6 +208,24 @@ def get_company_snapshot(symbol: str) -> CompanySnapshot:
     ak = _require_akshare()
 
     warnings: list[str] = []
+    try:
+        quote = _eastmoney_quote(normalized)
+        price = _safe_float(quote.get("f43"))
+        if price is not None:
+            price = price / 100
+        trade_date_raw = str(quote.get("f86") or "")
+        latest_trade_date = trade_date_raw[:4] + "-" + trade_date_raw[4:6] + "-" + trade_date_raw[6:8] if len(trade_date_raw) >= 8 else datetime.now().strftime("%Y-%m-%d")
+        return CompanySnapshot(
+            symbol=normalized,
+            name=str(quote.get("f58") or normalized),
+            latest_price=price,
+            latest_trade_date=latest_trade_date,
+            market_cap=_safe_float(quote.get("f116")),
+            warnings=warnings,
+        )
+    except Exception as exc:
+        warnings.append(f"东方财富行情兜底失败，改用 AkShare：{exc}")
+
     try:
         info = _individual_info_map(ak, normalized)
         hist = _recent_hist(ak, normalized)
