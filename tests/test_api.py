@@ -67,11 +67,19 @@ def test_api_returns_company_financials_and_valuation(monkeypatch):
 
 def test_data_health_uses_akshare_spot_endpoint(monkeypatch):
     class FakeAkshare:
-        def stock_zh_a_spot_em(self):
+        def stock_zh_a_hist(self, symbol, period, start_date, end_date, adjust):
             return pd.DataFrame(
                 [
-                    {"代码": "000001", "名称": "平安银行", "最新价": 10.0},
-                    {"代码": "600000", "名称": "浦发银行", "最新价": 8.0},
+                    {"日期": "2026-06-05", "收盘": 10.0},
+                    {"日期": "2026-06-08", "收盘": 10.2},
+                ]
+            )
+
+        def stock_individual_info_em(self, symbol):
+            return pd.DataFrame(
+                [
+                    {"item": "股票简称", "value": "平安银行"},
+                    {"item": "总股本", "value": 19405900000},
                 ]
             )
 
@@ -84,5 +92,5 @@ def test_data_health_uses_akshare_spot_endpoint(monkeypatch):
     assert response.status_code == 200
     assert payload["status"] == "ok"
     assert payload["data_source"] == "AkShare"
-    assert payload["endpoint"] == "stock_zh_a_spot_em"
+    assert payload["endpoint"] == "stock_zh_a_hist + stock_individual_info_em"
     assert payload["row_count"] == 2

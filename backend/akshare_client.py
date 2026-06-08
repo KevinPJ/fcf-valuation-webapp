@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any
 
@@ -89,20 +89,44 @@ def _share_count_from_info(info: dict[str, Any]) -> float | None:
     return _first_value(info, ["总股本", "流通股", "总股本(股)", "流通股本"])
 
 
+def _stock_name_from_info(info: dict[str, Any], fallback: str) -> str:
+    for key in ("股票简称", "股票名称", "名称"):
+        value = info.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return fallback
+
+
+def _recent_hist(ak: Any, symbol: str) -> pd.DataFrame:
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=45)).strftime("%Y%m%d")
+    return ak.stock_zh_a_hist(
+        symbol=_normalize_symbol(symbol),
+        period="daily",
+        start_date=start_date,
+        end_date=end_date,
+        adjust="",
+    )
+
+
 def check_data_source() -> dict[str, Any]:
     ak = _require_akshare()
+    symbol = "000001"
     try:
-        spot = ak.stock_zh_a_spot_em()
+        hist = _recent_hist(ak, symbol)
+        info = _individual_info_map(ak, symbol)
     except Exception as exc:
         raise _data_error(f"AkShare 数据源连通性检查失败：{exc}") from exc
-    if spot is None or spot.empty:
-        raise _data_error("AkShare 数据源连通性检查失败：行情接口返回空表。")
+    if hist is None or hist.empty:
+        raise _data_error("AkShare 数据源连通性检查失败：单股票日线接口返回空表。")
     return {
         "status": "ok",
         "data_source": "AkShare",
-        "endpoint": "stock_zh_a_spot_em",
-        "row_count": int(len(spot)),
-        "sample_columns": [str(column) for column in list(spot.columns)[:8]],
+        "endpoint": "stock_zh_a_hist + stock_individual_info_em",
+        "symbol": symbol,
+        "name": _stock_name_from_info(info, symbol),
+        "row_count": int(len(hist)),
+        "sample_columns": [str(column) for column in list(hist.columns)[:8]],
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -114,19 +138,18 @@ def get_company_snapshot(symbol: str) -> CompanySnapshot:
 
     warnings: list[str] = []
     try:
-        spot = ak.stock_zh_a_spot_em()
-        code_col = "代码"
-        row_df = spot[spot[code_col].astype(str) == normalized]
-        if row_df.empty:
-            raise _data_error(f"AkShare 实时行情未找到股票代码 {normalized}。", 404)
-        row = row_df.iloc[0].to_dict()
-        price = _safe_float(row.get("最新价"))
-        market_cap = _safe_float(row.get("总市值"))
+        info = _individual_info_map(ak, normalized)
+        hist = _recent_hist(ak, normalized)
+        if hist is None or hist.empty:
+            raise _data_error(f"AkShare 日线行情未找到股票代码 {normalized}。", 404)
+        row = hist.iloc[-1].to_dict()
+        price = _first_value(row, ["收盘", "close", "最新价"])
+        market_cap = _first_value(info, ["总市值", "总市值(元)"])
         return CompanySnapshot(
             symbol=normalized,
-            name=str(row.get("名称", normalized)),
+            name=_stock_name_from_info(info, normalized),
             latest_price=price,
-            latest_trade_date=datetime.now().strftime("%Y-%m-%d"),
+            latest_trade_date=str(row.get("日期", datetime.now().strftime("%Y-%m-%d"))),
             market_cap=market_cap,
             warnings=warnings,
         )

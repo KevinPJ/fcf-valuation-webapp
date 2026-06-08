@@ -43,7 +43,7 @@ docker run --rm -p 8000:8000 fcf-valuation-webapp
 - `GET /api/financials/{symbol}`：收入、净利润、经营现金流、资本开支、FCF、现金、债务、股本等时序数据。
 - `POST /api/valuation`：输入股票代码、一阶增速、永续增速、WACC 和可选覆盖项，返回 DCF 估值、预测表和敏感性矩阵。
 - `GET /api/health`：部署健康检查。
-- `GET /api/data-health`：实际调用 AkShare 行情接口，检查真实财经数据源连通性。
+- `GET /api/data-health`：实际调用 AkShare 单股票日线和个股信息接口，检查真实财经数据源连通性。
 
 ## 说明
 

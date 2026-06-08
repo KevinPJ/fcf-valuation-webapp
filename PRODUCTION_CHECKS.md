@@ -4,7 +4,7 @@
 
 1. 打开首页，确认能看到估值参数面板和图表区域。
 2. 访问 `/api/health`，确认 FastAPI 服务在线。
-3. 访问 `/api/data-health`，确认 AkShare 行情接口返回非零 `row_count`。
+3. 访问 `/api/data-health`，确认 AkShare 单股票日线接口返回非零 `row_count`。
 4. 访问 `/api/company/000001`，确认返回真实公司名称和最新价。
 5. 访问 `/api/financials/000001`，确认返回三大报表映射后的历史数据。
 6. 在首页输入 `000001` 并点击重新计算，确认页面显示估值、历史指标图、FCF 预测表和敏感性表。

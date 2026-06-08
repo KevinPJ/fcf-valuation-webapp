@@ -18,7 +18,7 @@
 ## 验收标准
 
 - `/api/health` 返回 `{"status":"ok","data_source":"AkShare",...}`。
-- `/api/data-health` 返回 AkShare 行情接口名称、行数和样本字段。
+- `/api/data-health` 返回 AkShare 单股票日线/个股信息接口名称、行数和样本字段。
 - `/api/company/000001` 返回真实公司名称、最新价和市值字段。
 - `/api/financials/000001` 返回 AkShare 报表时序数据。
 - 首页加载后能看到估值参数面板、估值结果卡片、历史指标图、FCF 预测表和敏感性表。
