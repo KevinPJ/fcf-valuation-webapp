@@ -196,9 +196,31 @@ def _period_from_report_date(row: dict[str, Any]) -> str:
 
 
 def _eastmoney_financials(symbol: str) -> FinancialsResponse:
-    cash_flow = _eastmoney_statement(symbol, "RPT_DMSK_FN_CASHFLOW")
-    income = _eastmoney_statement(symbol, "RPT_DMSK_FN_INCOME")
-    balance = _eastmoney_statement(symbol, "RPT_DMSK_FN_BALANCE")
+    warnings = ["财务报表来自东方财富公开接口。"]
+    statement_errors: list[str] = []
+
+    try:
+        cash_flow = _eastmoney_statement(symbol, "RPT_DMSK_FN_CASHFLOW")
+    except Exception as exc:
+        cash_flow = []
+        statement_errors.append(f"东方财富现金流量表失败：{exc}")
+
+    try:
+        income = _eastmoney_statement(symbol, "RPT_DMSK_FN_INCOME")
+    except Exception as exc:
+        income = []
+        statement_errors.append(f"东方财富利润表失败：{exc}")
+
+    try:
+        balance = _eastmoney_statement(symbol, "RPT_DMSK_FN_BALANCE")
+    except Exception as exc:
+        balance = []
+        statement_errors.append(f"东方财富资产负债表失败：{exc}")
+
+    if statement_errors:
+        warnings.extend(statement_errors)
+    if not cash_flow and not income and not balance:
+        raise ValueError("; ".join(statement_errors) or "Eastmoney returned no financial statements.")
 
     income_by_period = {_period_from_report_date(row): row for row in income}
     balance_by_period = {_period_from_report_date(row): row for row in balance}
@@ -214,11 +236,18 @@ def _eastmoney_financials(symbol: str) -> FinancialsResponse:
         if quote_price is not None and quote_price > 0 and quote_market_cap is not None:
             quote_shares = quote_market_cap / (quote_price / 100)
 
+    all_periods = sorted(
+        {
+            _period_from_report_date(row)
+            for row in [*cash_flow, *income, *balance]
+            if _period_from_report_date(row)
+        }
+    )
+
+    cash_flow_by_period = {_period_from_report_date(row): row for row in cash_flow}
     periods: list[FinancialPoint] = []
-    for row in cash_flow:
-        period = _period_from_report_date(row)
-        if not period:
-            continue
+    for period in all_periods:
+        row = cash_flow_by_period.get(period, {})
         inc = income_by_period.get(period, {})
         bal = balance_by_period.get(period, {})
         ocf = _first_value(row, ["NETCASH_OPERATE", "NET_CASH_OPERATE", "NETCASH_OPERATE_A", "CASHFLOW_STATEMENT_NETCASH_OPERATE"])
@@ -243,7 +272,6 @@ def _eastmoney_financials(symbol: str) -> FinancialsResponse:
         )
 
     periods = sorted({point.period: point for point in periods}.values(), key=lambda item: item.period)[-8:]
-    warnings = ["财务报表来自东方财富公开接口。"]
     if not any(point.free_cash_flow is not None for point in periods):
         warnings.append("东方财富字段中未能计算 FCF，可填写基准 FCF 覆盖。")
     if not any(point.shares is not None for point in periods):

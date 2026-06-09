@@ -118,6 +118,55 @@ def test_valuation_resolves_missing_model_inputs(monkeypatch):
     assert any("有息债务" in warning for warning in payload["warnings"])
 
 
+def test_valuation_uses_net_income_when_cash_flow_is_missing(monkeypatch):
+    company = CompanySnapshot(
+        symbol="600519",
+        name="贵州茅台",
+        latest_price=1500,
+        latest_trade_date="2026-06-08",
+        market_cap=1_884_000_000_000,
+    )
+    financials = FinancialsResponse(
+        symbol="600519",
+        updated_at="2026-06-08T00:00:00",
+        periods=[
+            FinancialPoint(
+                period="2024",
+                revenue=170_000_000_000,
+                net_income=86_000_000_000,
+                operating_cash_flow=None,
+                capital_expenditure=None,
+                free_cash_flow=None,
+                cash=None,
+                debt=None,
+                shares=None,
+            )
+        ],
+    )
+
+    monkeypatch.setattr(main, "get_company_snapshot", lambda symbol: company)
+    monkeypatch.setattr(main, "get_financials", lambda symbol: financials)
+
+    client = TestClient(main.app)
+    response = client.post(
+        "/api/valuation",
+        json={
+            "symbol": "600519",
+            "stage1Growth": 0.08,
+            "terminalGrowth": 0.025,
+            "wacc": 0.09,
+            "forecastYears": 5,
+        },
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["base_fcf"] == 86_000_000_000
+    assert payload["shares"] == 1_256_000_000
+    assert any("净利润代理" in warning for warning in payload["warnings"])
+    assert any("市值 / 最新价格" in warning for warning in payload["warnings"])
+
+
 def test_data_health_prefers_eastmoney_direct(monkeypatch):
     monkeypatch.setattr(
         akshare_client,
